@@ -1,6 +1,5 @@
 import { CATEGORIES, categoryFromKeywords } from "./categories.js";
 
-// Extrai valor em R$ de "30", "R$ 30", "gastei 12,90", "8 reais".
 export function extractAmount(text) {
   const m = text.match(/(?:r\$\s*)?(\d{1,3}(?:\.\d{3})+|\d+)(?:[.,](\d{1,2}))?/i);
   if (!m) return null;
@@ -10,10 +9,6 @@ export function extractAmount(text) {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-// Detecta compra parcelada: "12x", "12 vezes", "12 parcelas".
-// Convencao: o valor e o TOTAL, salvo quando vem "Nx de VALOR" (= por parcela).
-//   "celular 1200 em 12x"   -> total 1200, 12 parcelas
-//   "12x de 100"            -> 100 por parcela, total 1200
 export function parseInstallment(text) {
   const t = text.toLowerCase();
   const nMatch = t.match(/(\d+)\s*(?:x\b|vezes?\b|parcelas?\b)/);
@@ -21,12 +16,10 @@ export function parseInstallment(text) {
   const n = parseInt(nMatch[1], 10);
   if (n < 2 || n > 360) return null;
 
-  // texto sem o "Nx" pra nao confundir o N com o valor
   const rest = t.slice(0, nMatch.index) + " " + t.slice(nMatch.index + nMatch[0].length);
   const amount = extractAmount(rest);
   if (amount === null) return null;
 
-  // "de" logo apos o Nx => valor por parcela; senao => total
   const afterN = t.slice(nMatch.index + nMatch[0].length);
   const isPerParcela = /^\s*de\b/.test(afterN);
   const total = isPerParcela ? amount * n : amount;
@@ -34,7 +27,6 @@ export function parseInstallment(text) {
   return { total, n };
 }
 
-// Detecta ENTRADA (dinheiro recebido): "recebi 2000 salario", "ganhei 50".
 export function parseIncome(text) {
   const t = text.toLowerCase();
   if (!/\b(recebi|ganhei|entrou|caiu|sal[áa]rio|recebimento|me pagaram|pix recebido)\b/.test(t)) return null;
@@ -79,7 +71,7 @@ async function parseByLLM(text) {
   const raw = data.choices?.[0]?.message?.content ?? data.content?.[0]?.text ?? "";
   const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
 
-  if (typeof parsed.amount !== "number" || !(parsed.amount > 0)) return null; // nao e um gasto
+  if (typeof parsed.amount !== "number" || !(parsed.amount > 0)) return null; 
   const category = CATEGORIES.includes(parsed.category) ? parsed.category : "Outros";
   return { amount: parsed.amount, category, description: parsed.description || text.trim(), source: "llm" };
 }
@@ -87,10 +79,8 @@ async function parseByLLM(text) {
 export async function parseMessage(text) {
   const ruled = parseByRules(text);
 
-  // Caminho barato: regra achou valor E categoria -> sem LLM.
   if (ruled && ruled.category) return ruled;
 
-  // Senao, tenta o LLM (resolve valor por extenso e categoria desconhecida).
   if (process.env.LLM_API_URL) {
     try {
       const llm = await parseByLLM(text);
@@ -100,7 +90,6 @@ export async function parseMessage(text) {
     }
   }
 
-  // LLM indisponivel/falhou: usa o que a regra deu (valor sem categoria -> Outros).
   if (ruled) return { ...ruled, category: ruled.category || "Outros" };
   return null;
 }

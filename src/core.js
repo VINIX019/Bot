@@ -17,9 +17,8 @@ import {
 const fmt = (n) => n.toFixed(2).replace(".", ",");
 const short = (s) => (s.length > 40 ? s.slice(0, 39) + "…" : s).trim();
 
-// Estado da confirmacao de "apagar tudo" (na memoria do processo, expira em 2 min).
 const CLEAR_TTL_MS = 2 * 60 * 1000;
-const pendingClear = new Map(); // userId -> { stage, at }
+const pendingClear = new Map(); 
 
 function isClearAllRequest(text) {
   return /^\/?(apagar?\s+tudo|apagar?\s+todos|limpar\s+tudo|resetar(\s+tudo)?|apagartudo|zerar(\s+tudo)?)\b/.test(
@@ -110,7 +109,6 @@ async function buildIncomeSummary(userId, period) {
 }
 
 async function buildSummary(userId, period, category) {
-  // Detalhe de uma categoria (gastos)
   if (category) {
     const items = await getCategoryDetail(userId, category, period);
     if (items.length === 0) return `Nenhum gasto em ${category} ${emptyLabel(period)}. 🙂`;
@@ -120,7 +118,6 @@ async function buildSummary(userId, period, category) {
     return `📋 ${category} ${periodLabel(period)}\n\n${linhas}\n\nTotal: R$${fmt(total)} (${items.length} ${plural})`;
   }
 
-  // Resumo geral: gastos por categoria + saldo
   const rows = await getSummary(userId, period);
   const totals = await getPeriodTotals(userId, period);
   if (rows.length === 0 && totals.income === 0) {
@@ -141,7 +138,6 @@ async function buildSummary(userId, period, category) {
 export async function handleMessage({ channel, externalId, text }) {
   const { id: userId, isNew } = await getOrCreateUser(channel, externalId);
 
-  // --- Apagar tudo, com dupla confirmacao (tem prioridade sobre tudo) ---
   const t = text.trim().toLowerCase();
   const pend = pendingClear.get(userId);
   if (pend && Date.now() - pend.at > CLEAR_TTL_MS) {
@@ -155,7 +151,6 @@ export async function handleMessage({ channel, externalId, text }) {
       const n = await deleteAllTransactions(userId);
       return `🧹 Pronto, apaguei tudo (${n} lançamento${n === 1 ? "" : "s"}). Você está começando do zero.`;
     }
-    // qualquer outra coisa aborta, por segurança
     pendingClear.delete(userId);
     return "❌ Apagar tudo cancelado — nada foi apagado. Pode mandar seu comando de novo.";
   }
@@ -198,7 +193,6 @@ export async function handleMessage({ channel, externalId, text }) {
     return `Corrigido ✅ R$${fmt(updated.amount)} — ${updated.category}`;
   }
 
-  // Entrada (recebi/ganhei/salário...)
   const income = parseIncome(text);
   if (income) {
     const category = incomeSource(text);
@@ -219,7 +213,6 @@ export async function handleMessage({ channel, externalId, text }) {
     return reply;
   }
 
-  // Compra parcelada
   const inst = parseInstallment(text);
   if (inst) {
     const category = categoryFromKeywords(text) || "Outros";
@@ -239,7 +232,6 @@ export async function handleMessage({ channel, externalId, text }) {
     return reply;
   }
 
-  // Gasto comum
   const parsed = await parseMessage(text);
   if (!parsed) {
     if (isNew) return TUTORIAL;

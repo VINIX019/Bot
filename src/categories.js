@@ -1,5 +1,3 @@
-// Meio-termo: a lista e FIXA. O parser sempre encaixa a mensagem livre
-// numa dessas. Quer categoria nova? Adiciona aqui (e os keywords dela).
 
 export const CATEGORIES = [
   "Alimentação",
@@ -22,7 +20,6 @@ export const KEYWORD_MAP = {
   Casa: ["aluguel", "luz", "água", "agua", "internet", "conta", "gás", "gas", "condomínio", "condominio"],
 };
 
-// tira acento e poe minusculo, pra comparar sem se preocupar com "educacao" vs "educação"
 const norm = (s) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
 function tokenize(text) {
@@ -33,8 +30,7 @@ function tokenize(text) {
     .filter(Boolean);
 }
 
-// Match por PALAVRA INTEIRA (token), nao substring. Assim "gas" so casa
-// com "gas"/"gás" sozinho, nunca dentro de "gastei".
+
 export function categoryFromKeywords(text) {
   const set = new Set(tokenize(text));
   for (const [category, words] of Object.entries(KEYWORD_MAP)) {
@@ -43,8 +39,6 @@ export function categoryFromKeywords(text) {
   return null;
 }
 
-// Acha o NOME de uma categoria escrito pelo usuario (ex: "educação", "lazer").
-// Usado no comando de editar. Retorna null se nao reconhecer.
 export function matchCategoryName(text) {
   const tokens = tokenize(text).map(norm);
   for (const cat of CATEGORIES) {

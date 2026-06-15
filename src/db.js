@@ -16,7 +16,6 @@ export async function getOrCreateUser(channel, externalId) {
   return { id: rows[0].id, isNew: rows[0].is_new };
 }
 
-// kind: 'expense' (padrao) ou 'income'
 export async function insertTransaction({ userId, amount, category, description, rawMessage, kind = "expense" }) {
   await pool.query(
     `insert into transactions (user_id, amount, category, description, raw_message, kind)
@@ -42,7 +41,6 @@ export async function insertInstallments({ userId, total, n, category, descripti
   return { groupId };
 }
 
-// So GASTOS de hoje.
 export async function getTodayTotal(userId) {
   const { rows } = await pool.query(
     `select coalesce(sum(amount), 0) as total
@@ -56,7 +54,6 @@ export async function getTodayTotal(userId) {
   return parseFloat(rows[0].total);
 }
 
-// GASTOS por categoria no periodo.
 export async function getSummary(userId, period) {
   const { rows } = await pool.query(
     `select category, sum(amount) as total
@@ -72,7 +69,6 @@ export async function getSummary(userId, period) {
   return rows.map((r) => ({ category: r.category, total: parseFloat(r.total) }));
 }
 
-// Totais de entrada e saida no periodo, pra calcular saldo.
 export async function getPeriodTotals(userId, period) {
   const { rows } = await pool.query(
     `select kind, coalesce(sum(amount), 0) as total
@@ -106,7 +102,6 @@ export async function getCategoryDetail(userId, category, period) {
   return rows.map((r) => ({ description: r.description, amount: parseFloat(r.amount) }));
 }
 
-// Lista as ENTRADAS do periodo. Pro "resumo entradas".
 export async function getIncomeDetail(userId, period) {
   const { rows } = await pool.query(
     `select description, amount
@@ -162,7 +157,6 @@ export async function deleteLastTransaction(userId) {
   return { amount: parseFloat(last.amount), category: last.category };
 }
 
-// Apaga TODOS os lancamentos do usuario. Retorna quantos foram apagados.
 export async function deleteAllTransactions(userId) {
   const res = await pool.query(`delete from transactions where user_id = $1`, [userId]);
   return res.rowCount;

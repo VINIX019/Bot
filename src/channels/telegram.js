@@ -2,7 +2,6 @@ import { handleMessage } from "../core.js";
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const API = `https://api.telegram.org/bot${TOKEN}`;
-// Vazio = modo POLLING (local). Com URL pública = modo WEBHOOK (deploy).
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 async function sendMessage(chatId, text) {
@@ -31,7 +30,6 @@ async function processUpdate(update) {
 
 export async function mountTelegram(app) {
   if (WEBHOOK_URL) {
-    // ---- MODO WEBHOOK (deploy) ----
     await fetch(`${API}/setWebhook?url=${WEBHOOK_URL}/telegram/webhook`);
     app.post("/telegram/webhook", (req, res) => {
       res.sendStatus(200);
@@ -39,8 +37,7 @@ export async function mountTelegram(app) {
     });
     console.log("Telegram: modo WEBHOOK ->", WEBHOOK_URL);
   } else {
-    // ---- MODO POLLING (local, sem expor porta) ----
-    await fetch(`${API}/deleteWebhook`); // garante que nao ha webhook ativo
+    await fetch(`${API}/deleteWebhook`); 
     console.log("Telegram: modo POLLING (local). Manda mensagem pro bot.");
     let offset = 0;
     while (true) {

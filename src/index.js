@@ -6,8 +6,6 @@ import { mountWhatsApp } from "./channels/whatsapp.js";
 const app = express();
 app.use(express.json());
 
-// Escolhe o canal por variável de ambiente. É AQUI que você troca
-// Telegram <-> WhatsApp sem tocar no núcleo.
 const CHANNEL = process.env.CHANNEL || "telegram";
 
 if (CHANNEL === "telegram") mountTelegram(app);

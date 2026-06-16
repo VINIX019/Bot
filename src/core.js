@@ -12,6 +12,11 @@ import {
   updateLastTransaction,
   deleteLastTransaction,
   deleteAllTransactions,
+  setBudget,
+  removeBudget,
+  getBudget,
+  listBudgets,
+  getCategorySpentMonth,
 } from "./db.js";
 
 const fmt = (n) => n.toFixed(2).replace(".", ",");
@@ -39,6 +44,9 @@ const TUTORIAL =
   '• "resumo semana" / "resumo hoje"\n' +
   '• "resumo transporte" → uma categoria\n' +
   '• "resumo entradas" → só as entradas\n\n' +
+  "🎯 Limites\n" +
+  '• "limite lazer 300" → te aviso quando chegar perto\n' +
+  '• "limites" → ver como você está em cada um\n\n' +
   "✏️ Corrigir\n" +
   '• "editar 75" / "editar lazer"\n' +
   '• "apagar" → apaga o último\n' +
@@ -106,6 +114,42 @@ async function buildIncomeSummary(userId, period) {
   const linhas = items.map((i) => `• ${short(i.description)}: R$${fmt(i.amount)}`).join("\n");
   const plural = items.length === 1 ? "entrada" : "entradas";
   return `💰 Entradas ${periodLabel(period)}\n\n${linhas}\n\nTotal: R$${fmt(total)} (${items.length} ${plural})`;
+}
+
+function parseLimit(text) {
+  const t = text.toLowerCase().trim();
+  if (!/^\/?(limites?|tirar limite|remover limite)\b/.test(t)) return null;
+
+  const category = matchCategoryName(t) || categoryFromKeywords(t);
+
+  if (/^\/?(tirar|remover)\s+limite\b/.test(t)) {
+    return { action: "remove", category };
+  }
+  const amount = extractAmount(t.replace(/limites?/, " "));
+  if (!category && amount === null) return { action: "list" };
+  if (category && amount !== null) return { action: amount > 0 ? "set" : "remove", category, amount };
+  return { action: "help", category };
+}
+
+async function buildLimits(userId) {
+  const budgets = await listBudgets(userId);
+  if (budgets.length === 0) return 'Você não tem limites definidos.\nDefina com: "limite lazer 300".';
+  const linhas = [];
+  for (const b of budgets) {
+    const spent = await getCategorySpentMonth(userId, b.category);
+    const icon = spent > b.limit ? "⚠️" : spent >= b.limit * 0.8 ? "🟡" : "🟢";
+    linhas.push(`${icon} ${b.category}: R$${fmt(spent)} / R$${fmt(b.limit)}`);
+  }
+  return `🎯 Seus limites (mês)\n\n${linhas.join("\n")}`;
+}
+
+async function budgetAlert(userId, category) {
+  const limit = await getBudget(userId, category);
+  if (!limit) return "";
+  const spent = await getCategorySpentMonth(userId, category);
+  if (spent > limit) return `\n⚠️ Estourou ${category}: R$${fmt(spent)} de R$${fmt(limit)} no mês.`;
+  if (spent >= limit * 0.8) return `\n🟡 Quase no limite de ${category}: R$${fmt(spent)} de R$${fmt(limit)}.`;
+  return "";
 }
 
 async function buildSummary(userId, period, category) {
@@ -193,6 +237,20 @@ export async function handleMessage({ channel, externalId, text }) {
     return `Corrigido ✅ R$${fmt(updated.amount)} — ${updated.category}`;
   }
 
+  const limit = parseLimit(text);
+  if (limit) {
+    if (limit.action === "list") return await buildLimits(userId);
+    if (limit.action === "help" || !limit.category) {
+      return 'Pra definir um limite: "limite lazer 300".\nVer todos: "limites".\nTirar: "tirar limite lazer".';
+    }
+    if (limit.action === "remove") {
+      const n = await removeBudget(userId, limit.category);
+      return n ? `Limite de ${limit.category} removido.` : `Não havia limite em ${limit.category}.`;
+    }
+    await setBudget(userId, limit.category, limit.amount);
+    return `🎯 Limite de ${limit.category}: R$${fmt(limit.amount)}/mês. Te aviso quando chegar perto.`;
+  }
+
   const refund = parseRefund(text);
   if (refund) {
     const category = categoryFromKeywords(text) || "Outros";
@@ -270,6 +328,7 @@ export async function handleMessage({ channel, externalId, text }) {
   let reply =
     `Anotado ✅ R$${fmt(parsed.amount)} — ${parsed.category}\n` +
     `Hoje você já gastou R$${fmt(total)}.`;
+  reply += await budgetAlert(userId, parsed.category);
   if (isNew) reply += NEW_USER_HINT;
   return reply;
 }

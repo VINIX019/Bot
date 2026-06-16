@@ -161,3 +161,47 @@ export async function deleteAllTransactions(userId) {
   const res = await pool.query(`delete from transactions where user_id = $1`, [userId]);
   return res.rowCount;
 }
+
+export async function setBudget(userId, category, limit) {
+  await pool.query(
+    `insert into budgets (user_id, category, monthly_limit) values ($1, $2, $3)
+       on conflict (user_id, category) do update set monthly_limit = excluded.monthly_limit`,
+    [userId, category, limit]
+  );
+}
+
+export async function removeBudget(userId, category) {
+  const res = await pool.query(
+    `delete from budgets where user_id = $1 and category = $2`,
+    [userId, category]
+  );
+  return res.rowCount;
+}
+
+export async function getBudget(userId, category) {
+  const { rows } = await pool.query(
+    `select monthly_limit from budgets where user_id = $1 and category = $2`,
+    [userId, category]
+  );
+  return rows.length ? parseFloat(rows[0].monthly_limit) : null;
+}
+
+export async function listBudgets(userId) {
+  const { rows } = await pool.query(
+    `select category, monthly_limit from budgets where user_id = $1 order by category`,
+    [userId]
+  );
+  return rows.map((r) => ({ category: r.category, limit: parseFloat(r.monthly_limit) }));
+}
+
+export async function getCategorySpentMonth(userId, category) {
+  const { rows } = await pool.query(
+    `select coalesce(sum(amount), 0) as total
+       from transactions
+      where user_id = $1 and kind = 'expense' and category = $2
+        and occurred_at at time zone '${TZ}' >= date_trunc('month', now() at time zone '${TZ}')
+        and occurred_at at time zone '${TZ}' <  date_trunc('month', now() at time zone '${TZ}') + interval '1 month'`,
+    [userId, category]
+  );
+  return parseFloat(rows[0].total);
+}

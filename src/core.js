@@ -27,8 +27,9 @@ import {
 const fmt = (n) => n.toFixed(2).replace(".", ",");
 const short = (s) => (s.length > 40 ? s.slice(0, 39) + "…" : s).trim();
 
+// Estado da confirmacao de "apagar tudo" (na memoria do processo, expira em 2 min).
 const CLEAR_TTL_MS = 2 * 60 * 1000;
-const pendingClear = new Map(); 
+const pendingClear = new Map(); // userId -> { stage, at }
 
 function isClearAllRequest(text) {
   return /^\/?(apagar?\s+tudo|apagar?\s+todos|limpar\s+tudo|resetar(\s+tudo)?|apagartudo|zerar(\s+tudo)?)\b/.test(
@@ -152,6 +153,7 @@ async function buildLimits(userId) {
   return `🎯 Seus limites (mês)\n\n${linhas.join("\n")}`;
 }
 
+// Sufixo de aviso pra anexar na confirmacao de um gasto. "" se nao houver limite.
 async function budgetAlert(userId, category) {
   const limit = await getBudget(userId, category);
   if (!limit) return "";
@@ -190,6 +192,7 @@ async function buildRecurringList(userId) {
 }
 
 async function buildSummary(userId, period, category) {
+  // Detalhe de uma categoria (gastos)
   if (category) {
     const items = await getCategoryDetail(userId, category, period);
     if (items.length === 0) return `Nenhum gasto em ${category} ${emptyLabel(period)}. 🙂`;
@@ -199,6 +202,7 @@ async function buildSummary(userId, period, category) {
     return `📋 ${category} ${periodLabel(period)}\n\n${linhas}\n\nTotal: R$${fmt(total)} (${items.length} ${plural})`;
   }
 
+  // Resumo geral: gastos por categoria + saldo
   const rows = await getSummary(userId, period);
   const totals = await getPeriodTotals(userId, period);
   if (rows.length === 0 && totals.income === 0) {
@@ -219,8 +223,10 @@ async function buildSummary(userId, period, category) {
 export async function handleMessage({ channel, externalId, text }) {
   const { id: userId, isNew } = await getOrCreateUser(channel, externalId);
 
+  // Lança os recorrentes do mês atual se ainda não foram lançados (idempotente).
   await materializeRecurring(userId);
 
+  // --- Apagar tudo, com dupla confirmacao (tem prioridade sobre tudo) ---
   const t = text.trim().toLowerCase();
   const pend = pendingClear.get(userId);
   if (pend && Date.now() - pend.at > CLEAR_TTL_MS) {
@@ -234,6 +240,7 @@ export async function handleMessage({ channel, externalId, text }) {
       const n = await deleteAllData(userId);
       return `🧹 Pronto, apaguei tudo (${n} lançamento${n === 1 ? "" : "s"}), além dos limites e recorrentes. Você está começando do zero.`;
     }
+    // qualquer outra coisa aborta, por segurança
     pendingClear.delete(userId);
     return "❌ Apagar tudo cancelado — nada foi apagado. Pode mandar seu comando de novo.";
   }
@@ -276,6 +283,7 @@ export async function handleMessage({ channel, externalId, text }) {
     return `Corrigido ✅ R$${fmt(updated.amount)} — ${updated.category}`;
   }
 
+  // Limites de orçamento: definir / listar / remover
   const limit = parseLimit(text);
   if (limit) {
     if (limit.action === "list") return await buildLimits(userId);
@@ -290,6 +298,7 @@ export async function handleMessage({ channel, externalId, text }) {
     return `🎯 Limite de ${limit.category}: R$${fmt(limit.amount)}/mês. Te aviso quando chegar perto.`;
   }
 
+  // Gastos recorrentes: criar / listar / remover
   const rec = parseRecurring(text);
   if (rec) {
     if (rec.action === "list") return await buildRecurringList(userId);
@@ -301,13 +310,14 @@ export async function handleMessage({ channel, externalId, text }) {
       const item = items[rec.index - 1];
       if (!item) return `Não achei o recorrente número ${rec.index}. Veja a lista com "recorrentes".`;
       await deactivateRecurring(userId, item.id);
-      return `Recorrente removido: ${short(item.description)} (R$${fmt(item.amount)}).`;
+      return `Recorrente removido: ${short(item.description)} (R$${fmt(item.amount)}). Tirei também o lançamento deste mês.`;
     }
     await addRecurring(userId, { amount: rec.amount, category: rec.category, description: rec.description });
-    await materializeRecurring(userId); 
+    await materializeRecurring(userId); // já lança o deste mês
     return `🔁 Recorrente criado: ${short(rec.description)} — R$${fmt(rec.amount)}/mês em ${rec.category}.\nVou lançar sozinho todo mês.`;
   }
 
+  // Estorno / devolucao (dinheiro que volta) -> gasto negativo na categoria
   const refund = parseRefund(text);
   if (refund) {
     const category = categoryFromKeywords(text) || "Outros";
@@ -328,6 +338,7 @@ export async function handleMessage({ channel, externalId, text }) {
     return reply;
   }
 
+  // Entrada (recebi/ganhei/salário...)
   const income = parseIncome(text);
   if (income) {
     const category = incomeSource(text);
@@ -348,6 +359,7 @@ export async function handleMessage({ channel, externalId, text }) {
     return reply;
   }
 
+  // Compra parcelada
   const inst = parseInstallment(text);
   if (inst) {
     const category = categoryFromKeywords(text) || "Outros";
@@ -367,6 +379,7 @@ export async function handleMessage({ channel, externalId, text }) {
     return reply;
   }
 
+  // Gasto comum
   const parsed = await parseMessage(text);
   if (!parsed) {
     if (isNew) return TUTORIAL;

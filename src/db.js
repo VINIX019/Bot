@@ -16,6 +16,7 @@ export async function getOrCreateUser(channel, externalId) {
   return { id: rows[0].id, isNew: rows[0].is_new };
 }
 
+// kind: 'expense' (padrao) ou 'income'
 export async function insertTransaction({ userId, amount, category, description, rawMessage, kind = "expense" }) {
   await pool.query(
     `insert into transactions (user_id, amount, category, description, raw_message, kind)
@@ -41,6 +42,7 @@ export async function insertInstallments({ userId, total, n, category, descripti
   return { groupId };
 }
 
+// So GASTOS de hoje.
 export async function getTodayTotal(userId) {
   const { rows } = await pool.query(
     `select coalesce(sum(amount), 0) as total
@@ -54,6 +56,7 @@ export async function getTodayTotal(userId) {
   return parseFloat(rows[0].total);
 }
 
+// GASTOS por categoria no periodo.
 export async function getSummary(userId, period) {
   const { rows } = await pool.query(
     `select category, sum(amount) as total
@@ -69,6 +72,7 @@ export async function getSummary(userId, period) {
   return rows.map((r) => ({ category: r.category, total: parseFloat(r.total) }));
 }
 
+// Totais de entrada e saida no periodo, pra calcular saldo.
 export async function getPeriodTotals(userId, period) {
   const { rows } = await pool.query(
     `select kind, coalesce(sum(amount), 0) as total
@@ -102,6 +106,7 @@ export async function getCategoryDetail(userId, category, period) {
   return rows.map((r) => ({ description: r.description, amount: parseFloat(r.amount) }));
 }
 
+// Lista as ENTRADAS do periodo. Pro "resumo entradas".
 export async function getIncomeDetail(userId, period) {
   const { rows } = await pool.query(
     `select description, amount
@@ -157,11 +162,13 @@ export async function deleteLastTransaction(userId) {
   return { amount: parseFloat(last.amount), category: last.category };
 }
 
+// Apaga TODOS os lancamentos do usuario. Retorna quantos foram apagados.
 export async function deleteAllTransactions(userId) {
   const res = await pool.query(`delete from transactions where user_id = $1`, [userId]);
   return res.rowCount;
 }
 
+// --- Limites por categoria (orcamento) ---
 export async function setBudget(userId, category, limit) {
   await pool.query(
     `insert into budgets (user_id, category, monthly_limit) values ($1, $2, $3)
@@ -194,6 +201,7 @@ export async function listBudgets(userId) {
   return rows.map((r) => ({ category: r.category, limit: parseFloat(r.monthly_limit) }));
 }
 
+// Gasto do mes atual numa categoria (pro aviso de limite).
 export async function getCategorySpentMonth(userId, category) {
   const { rows } = await pool.query(
     `select coalesce(sum(amount), 0) as total
@@ -206,6 +214,7 @@ export async function getCategorySpentMonth(userId, category) {
   return parseFloat(rows[0].total);
 }
 
+// --- Gastos recorrentes (moldes) ---
 export async function addRecurring(userId, { amount, category, description }) {
   await pool.query(
     `insert into recurring (user_id, amount, category, description) values ($1, $2, $3, $4)`,
@@ -227,9 +236,20 @@ export async function deactivateRecurring(userId, id) {
     `update recurring set active = false where id = $1 and user_id = $2`,
     [id, userId]
   );
+  // apaga a ocorrencia automatica DESTE mes, pra "criar e remover" ficar limpo
+  // (meses passados ficam como historico)
+  await pool.query(
+    `delete from transactions
+      where user_id = $1 and recurring_id = $2
+        and occurred_at at time zone '${TZ}' >= date_trunc('month', now() at time zone '${TZ}')
+        and occurred_at at time zone '${TZ}' <  date_trunc('month', now() at time zone '${TZ}') + interval '1 month'`,
+    [userId, id]
+  );
   return res.rowCount;
 }
 
+// Materializacao preguicosa: cria os lancamentos do mes atual pros recorrentes
+// ativos que ainda nao tem ocorrencia neste mes. Idempotente.
 export async function materializeRecurring(userId) {
   await pool.query(
     `insert into transactions (user_id, amount, category, description, raw_message, recurring_id, kind)
@@ -246,6 +266,7 @@ export async function materializeRecurring(userId) {
   );
 }
 
+// Apaga TUDO do usuario (transacoes + recorrentes + limites). Pro "apagar tudo".
 export async function deleteAllData(userId) {
   const res = await pool.query(`delete from transactions where user_id = $1`, [userId]);
   await pool.query(`delete from recurring where user_id = $1`, [userId]);

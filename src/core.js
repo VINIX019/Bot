@@ -54,6 +54,7 @@ const TUTORIAL =
   '• "limites" → ver como você está em cada um\n\n' +
   "🔁 Recorrentes\n" +
   '• "recorrente aluguel 1200" → lanço sozinho todo mês\n' +
+  '• "tirar recorrente 1" → remove o recorrente\n' +
   '• "recorrentes" → ver os fixos\n\n' +
   "✏️ Corrigir\n" +
   '• "editar 75" / "editar lazer"\n' +

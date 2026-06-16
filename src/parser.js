@@ -35,6 +35,14 @@ export function parseIncome(text) {
   return { amount, description: text.trim() };
 }
 
+export function parseRefund(text) {
+  const t = text.toLowerCase();
+  if (!/\b(estorno|estornou|estornaram|estornei|estornad[oa]|devolu[çc][ãa]o|devolveram|devolvi|devolvido|reembolso|reembolsaram|reembolsad[oa])\b/.test(t)) return null;
+  const amount = extractAmount(text);
+  if (amount === null) return null;
+  return { amount, description: text.trim() };
+}
+
 function parseByRules(text) {
   const amount = extractAmount(text);
   if (amount === null) return null;
@@ -71,7 +79,7 @@ async function parseByLLM(text) {
   const raw = data.choices?.[0]?.message?.content ?? data.content?.[0]?.text ?? "";
   const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
 
-  if (typeof parsed.amount !== "number" || !(parsed.amount > 0)) return null; 
+  if (typeof parsed.amount !== "number" || !(parsed.amount > 0)) return null;
   const category = CATEGORIES.includes(parsed.category) ? parsed.category : "Outros";
   return { amount: parsed.amount, category, description: parsed.description || text.trim(), source: "llm" };
 }

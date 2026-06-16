@@ -1,4 +1,4 @@
-import { parseMessage, parseInstallment, parseIncome, extractAmount } from "./parser.js";
+import { parseMessage, parseInstallment, parseIncome, parseRefund, extractAmount } from "./parser.js";
 import { matchCategoryName, categoryFromKeywords } from "./categories.js";
 import {
   getOrCreateUser,
@@ -141,7 +141,7 @@ export async function handleMessage({ channel, externalId, text }) {
   const t = text.trim().toLowerCase();
   const pend = pendingClear.get(userId);
   if (pend && Date.now() - pend.at > CLEAR_TTL_MS) {
-    pendingClear.delete(userId); // expirou
+    pendingClear.delete(userId); 
   }
   const active = pendingClear.get(userId);
 
@@ -191,6 +191,26 @@ export async function handleMessage({ channel, externalId, text }) {
     const updated = await updateLastTransaction(userId, edit);
     if (!updated) return "Não há nenhum lançamento pra editar. 🤷";
     return `Corrigido ✅ R$${fmt(updated.amount)} — ${updated.category}`;
+  }
+
+  const refund = parseRefund(text);
+  if (refund) {
+    const category = categoryFromKeywords(text) || "Outros";
+    await insertTransaction({
+      userId,
+      amount: -refund.amount,
+      category,
+      description: text,
+      rawMessage: text,
+      kind: "expense",
+    });
+    const totals = await getPeriodTotals(userId, "month");
+    const icon = totals.balance >= 0 ? "🟢" : "🔴";
+    let reply =
+      `Estorno registrado ↩️ −R$${fmt(refund.amount)} — ${category}\n` +
+      `Reduziu seus gastos. Saldo do mês: R$${fmt(totals.balance)} ${icon}`;
+    if (isNew) reply += NEW_USER_HINT;
+    return reply;
   }
 
   const income = parseIncome(text);

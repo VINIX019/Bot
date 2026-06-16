@@ -17,6 +17,11 @@ import {
   getBudget,
   listBudgets,
   getCategorySpentMonth,
+  addRecurring,
+  listRecurring,
+  deactivateRecurring,
+  materializeRecurring,
+  deleteAllData,
 } from "./db.js";
 
 const fmt = (n) => n.toFixed(2).replace(".", ",");
@@ -47,6 +52,9 @@ const TUTORIAL =
   "🎯 Limites\n" +
   '• "limite lazer 300" → te aviso quando chegar perto\n' +
   '• "limites" → ver como você está em cada um\n\n' +
+  "🔁 Recorrentes\n" +
+  '• "recorrente aluguel 1200" → lanço sozinho todo mês\n' +
+  '• "recorrentes" → ver os fixos\n\n' +
   "✏️ Corrigir\n" +
   '• "editar 75" / "editar lazer"\n' +
   '• "apagar" → apaga o último\n' +
@@ -152,6 +160,34 @@ async function budgetAlert(userId, category) {
   return "";
 }
 
+function parseRecurring(text) {
+  const t = text.toLowerCase().trim();
+  if (!/^\/?(recorrentes?|tirar recorrente|remover recorrente)\b/.test(t)) return null;
+
+  const rem = t.match(/^\/?(?:tirar|remover)\s+recorrente\s+(\d+)/);
+  if (rem) return { action: "remove", index: parseInt(rem[1], 10) };
+
+  if (/^\/?recorrentes\b/.test(t) && extractAmount(t) === null) return { action: "list" };
+
+  if (/^\/?recorrente\b/.test(t)) {
+    const rest = text.replace(/^\s*\/?recorrente\s*/i, "");
+    const amount = extractAmount(rest);
+    if (amount === null) return { action: "help" };
+    const category = categoryFromKeywords(rest) || "Outros";
+    return { action: "add", amount, category, description: rest.trim() };
+  }
+  return { action: "help" };
+}
+
+async function buildRecurringList(userId) {
+  const items = await listRecurring(userId);
+  if (items.length === 0) return 'Você não tem gastos recorrentes.\nAdicione com: "recorrente aluguel 1200".';
+  const linhas = items
+    .map((r, i) => `${i + 1}. ${short(r.description)}: R$${fmt(r.amount)} — ${r.category}`)
+    .join("\n");
+  return `🔁 Seus gastos recorrentes\n\n${linhas}\n\nPra tirar um: "tirar recorrente <número>".`;
+}
+
 async function buildSummary(userId, period, category) {
   if (category) {
     const items = await getCategoryDetail(userId, category, period);
@@ -182,18 +218,20 @@ async function buildSummary(userId, period, category) {
 export async function handleMessage({ channel, externalId, text }) {
   const { id: userId, isNew } = await getOrCreateUser(channel, externalId);
 
+  await materializeRecurring(userId);
+
   const t = text.trim().toLowerCase();
   const pend = pendingClear.get(userId);
   if (pend && Date.now() - pend.at > CLEAR_TTL_MS) {
-    pendingClear.delete(userId); 
+    pendingClear.delete(userId); // expirou
   }
   const active = pendingClear.get(userId);
 
   if (active) {
     if (t === "confirmar") {
       pendingClear.delete(userId);
-      const n = await deleteAllTransactions(userId);
-      return `🧹 Pronto, apaguei tudo (${n} lançamento${n === 1 ? "" : "s"}). Você está começando do zero.`;
+      const n = await deleteAllData(userId);
+      return `🧹 Pronto, apaguei tudo (${n} lançamento${n === 1 ? "" : "s"}), além dos limites e recorrentes. Você está começando do zero.`;
     }
     pendingClear.delete(userId);
     return "❌ Apagar tudo cancelado — nada foi apagado. Pode mandar seu comando de novo.";
@@ -249,6 +287,24 @@ export async function handleMessage({ channel, externalId, text }) {
     }
     await setBudget(userId, limit.category, limit.amount);
     return `🎯 Limite de ${limit.category}: R$${fmt(limit.amount)}/mês. Te aviso quando chegar perto.`;
+  }
+
+  const rec = parseRecurring(text);
+  if (rec) {
+    if (rec.action === "list") return await buildRecurringList(userId);
+    if (rec.action === "help") {
+      return 'Pra criar um gasto recorrente: "recorrente aluguel 1200".\nVer todos: "recorrentes". Tirar: "tirar recorrente 1".';
+    }
+    if (rec.action === "remove") {
+      const items = await listRecurring(userId);
+      const item = items[rec.index - 1];
+      if (!item) return `Não achei o recorrente número ${rec.index}. Veja a lista com "recorrentes".`;
+      await deactivateRecurring(userId, item.id);
+      return `Recorrente removido: ${short(item.description)} (R$${fmt(item.amount)}).`;
+    }
+    await addRecurring(userId, { amount: rec.amount, category: rec.category, description: rec.description });
+    await materializeRecurring(userId); 
+    return `🔁 Recorrente criado: ${short(rec.description)} — R$${fmt(rec.amount)}/mês em ${rec.category}.\nVou lançar sozinho todo mês.`;
   }
 
   const refund = parseRefund(text);

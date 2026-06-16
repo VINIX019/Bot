@@ -205,3 +205,50 @@ export async function getCategorySpentMonth(userId, category) {
   );
   return parseFloat(rows[0].total);
 }
+
+export async function addRecurring(userId, { amount, category, description }) {
+  await pool.query(
+    `insert into recurring (user_id, amount, category, description) values ($1, $2, $3, $4)`,
+    [userId, amount, category, description]
+  );
+}
+
+export async function listRecurring(userId) {
+  const { rows } = await pool.query(
+    `select id, amount, category, description from recurring
+      where user_id = $1 and active = true order by created_at`,
+    [userId]
+  );
+  return rows.map((r) => ({ id: r.id, amount: parseFloat(r.amount), category: r.category, description: r.description }));
+}
+
+export async function deactivateRecurring(userId, id) {
+  const res = await pool.query(
+    `update recurring set active = false where id = $1 and user_id = $2`,
+    [id, userId]
+  );
+  return res.rowCount;
+}
+
+export async function materializeRecurring(userId) {
+  await pool.query(
+    `insert into transactions (user_id, amount, category, description, raw_message, recurring_id, kind)
+     select r.user_id, r.amount, r.category, r.description, '(recorrente)', r.id, 'expense'
+       from recurring r
+      where r.user_id = $1 and r.active = true
+        and not exists (
+          select 1 from transactions t
+           where t.recurring_id = r.id
+             and t.occurred_at at time zone '${TZ}' >= date_trunc('month', now() at time zone '${TZ}')
+             and t.occurred_at at time zone '${TZ}' <  date_trunc('month', now() at time zone '${TZ}') + interval '1 month'
+        )`,
+    [userId]
+  );
+}
+
+export async function deleteAllData(userId) {
+  const res = await pool.query(`delete from transactions where user_id = $1`, [userId]);
+  await pool.query(`delete from recurring where user_id = $1`, [userId]);
+  await pool.query(`delete from budgets where user_id = $1`, [userId]);
+  return res.rowCount;
+}

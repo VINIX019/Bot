@@ -110,12 +110,36 @@ export async function getPeriodTotals(userId, period) {
       group by kind`,
     [userId, period]
   );
-  let income = 0, expense = 0;
+  let income = 0, expense = 0, reserve = 0;
   for (const r of rows) {
     if (r.kind === "income") income = parseFloat(r.total);
+    else if (r.kind === "reserve") reserve = parseFloat(r.total);
     else expense += parseFloat(r.total);
   }
-  return { income, expense, balance: income - expense };
+  // guardar na reserva abate do disponível; tirar (negativo) devolve
+  return { income, expense, reserve, balance: income - expense - reserve };
+}
+
+// Total acumulado da reserva (todo o histórico).
+export async function getReserveTotal(userId) {
+  const { rows } = await pool.query(
+    `select coalesce(sum(amount), 0) as total from transactions where user_id = $1 and kind = 'reserve'`,
+    [userId]
+  );
+  return parseFloat(rows[0].total);
+}
+
+export async function setReserveGoal(userId, target) {
+  await pool.query(
+    `insert into reserve_goals (user_id, target) values ($1, $2)
+       on conflict (user_id) do update set target = excluded.target`,
+    [userId, target]
+  );
+}
+
+export async function getReserveGoal(userId) {
+  const { rows } = await pool.query(`select target from reserve_goals where user_id = $1`, [userId]);
+  return rows.length ? parseFloat(rows[0].target) : null;
 }
 
 export async function getCategoryDetail(userId, category, period) {
@@ -298,5 +322,6 @@ export async function deleteAllData(userId) {
   const res = await pool.query(`delete from transactions where user_id = $1`, [userId]);
   await pool.query(`delete from recurring where user_id = $1`, [userId]);
   await pool.query(`delete from budgets where user_id = $1`, [userId]);
+  await pool.query(`update users set reserve_goal = null where id = $1`, [userId]);
   return res.rowCount;
 }

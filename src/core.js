@@ -20,6 +20,9 @@ import {
   getBudget,
   listBudgets,
   getCategorySpentMonth,
+  getReserveTotal,
+  setReserveGoal,
+  getReserveGoal,
   addRecurring,
   listRecurring,
   deactivateRecurring,
@@ -94,6 +97,10 @@ const TUTORIAL =
   "🔁 Recorrentes\n" +
   '• "recorrente aluguel 1200" → lanço sozinho todo mês\n' +
   '• "recorrentes" → ver os fixos\n\n' +
+  "🏦 Reserva\n" +
+  '• "guardei 200 na reserva"\n' +
+  '• "meta reserva 5000" → acompanho seu progresso\n' +
+  '• "reserva" → quanto você já guardou\n\n' +
   "✏️ Corrigir\n" +
   '• "editar 75" / "editar lazer"\n' +
   '• "apagar" → apaga o último\n' +
@@ -228,6 +235,34 @@ async function buildRecurringList(userId) {
   return `🔁 Seus gastos recorrentes\n\n${linhas}\n\nPra tirar um: "tirar recorrente <número>".`;
 }
 
+function parseReserve(text) {
+  const t = text.toLowerCase().trim();
+  if (/^\/?meta\s+reserva\b/.test(t)) {
+    const target = extractAmount(t.replace(/meta\s+reserva/, " "));
+    return { action: target ? "goal" : "help", target };
+  }
+  if (/\b(guardei|guardar|guardando|poupei|poupar|reservei)\b/.test(t)) {
+    const amount = extractAmount(text);
+    return { action: amount === null ? "help" : "deposit", amount };
+  }
+  if (/\breserva\b/.test(t) && /\b(tirei|tirar|saquei|sacar|resgatei|resgatar|usei|usar|retirei|retirar)\b/.test(t)) {
+    const amount = extractAmount(text);
+    return { action: amount === null ? "help" : "withdraw", amount };
+  }
+  if (/^\/?reservas?\b/.test(t) && extractAmount(t) === null) return { action: "show" };
+  return null;
+}
+
+async function reserveLine(userId) {
+  const total = await getReserveTotal(userId);
+  const goal = await getReserveGoal(userId);
+  if (goal && goal > 0) {
+    const pct = Math.round((total / goal) * 100);
+    return `🏦 Reserva: R$${fmt(total)} de R$${fmt(goal)} (${pct}%)`;
+  }
+  return `🏦 Reserva: R$${fmt(total)}`;
+}
+
 async function buildSummary(userId, period, category) {
   // Detalhe de uma categoria (gastos)
   if (category) {
@@ -242,7 +277,7 @@ async function buildSummary(userId, period, category) {
   // Resumo geral: gastos por categoria + saldo
   const rows = await getSummary(userId, period);
   const totals = await getPeriodTotals(userId, period);
-  if (rows.length === 0 && totals.income === 0) {
+  if (rows.length === 0 && totals.income === 0 && totals.reserve === 0) {
     return `Nenhum lançamento ${emptyLabel(period)}. 🙂`;
   }
   const icon = totals.balance >= 0 ? "🟢" : "🔴";
@@ -250,10 +285,9 @@ async function buildSummary(userId, period, category) {
 
   let out = `📊 Resumo ${periodLabel(period)}\n\n`;
   if (cats) out += cats + "\n\n";
-  out +=
-    `Saídas: R$${fmt(totals.expense)}\n` +
-    `Entradas: R$${fmt(totals.income)}\n` +
-    `Saldo: R$${fmt(totals.balance)} ${icon}`;
+  out += `Saídas: R$${fmt(totals.expense)}\n` + `Entradas: R$${fmt(totals.income)}\n`;
+  if (totals.reserve !== 0) out += `Guardado: R$${fmt(totals.reserve)}\n`;
+  out += `Saldo: R$${fmt(totals.balance)} ${icon}`;
   return out;
 }
 
@@ -369,6 +403,36 @@ export async function handleMessage({ channel, externalId, text }) {
     await addRecurring(userId, { amount: rec.amount, category: rec.category, description: rec.description });
     await materializeRecurring(userId); // já lança o deste mês
     return `🔁 Recorrente criado: ${short(rec.description)} — R$${fmt(rec.amount)}/mês em ${rec.category}.\nVou lançar sozinho todo mês.`;
+  }
+
+  // Reserva de emergência: guardar / tirar / ver / meta
+  const reserve = parseReserve(text);
+  if (reserve) {
+    if (reserve.action === "show") return await reserveLine(userId);
+    if (reserve.action === "goal") {
+      await setReserveGoal(userId, reserve.target);
+      return `🎯 Meta de reserva: R$${fmt(reserve.target)}. Bora guardar! 💪`;
+    }
+    if (reserve.action === "help") {
+      return 'Pra guardar: "guardei 200 na reserva".\nTirar: "tirei 100 da reserva".\nVer: "reserva". Meta: "meta reserva 5000".';
+    }
+    if (reserve.action === "withdraw") {
+      const total = await getReserveTotal(userId);
+      if (reserve.amount > total) {
+        return `Você tem só R$${fmt(total)} na reserva — não dá pra tirar R$${fmt(reserve.amount)}.`;
+      }
+      await insertTransaction({
+        userId, amount: -reserve.amount, category: "Reserva",
+        description: text, rawMessage: text, kind: "reserve",
+      });
+      return `↩️ Tirei R$${fmt(reserve.amount)} da reserva (voltou pro disponível).\n${await reserveLine(userId)}`;
+    }
+    // deposit
+    await insertTransaction({
+      userId, amount: reserve.amount, category: "Reserva",
+      description: text, rawMessage: text, kind: "reserve",
+    });
+    return `🏦 Guardei R$${fmt(reserve.amount)} na reserva.\n${await reserveLine(userId)}`;
   }
 
   // Estorno / devolucao (dinheiro que volta) -> gasto negativo na categoria

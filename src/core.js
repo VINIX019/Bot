@@ -12,6 +12,9 @@ import {
   updateLastTransaction,
   deleteLastTransaction,
   deleteAllTransactions,
+  getTransactionById,
+  deleteTransactionById,
+  updateTransactionById,
   setBudget,
   removeBudget,
   getBudget,
@@ -26,10 +29,43 @@ import {
 
 const fmt = (n) => n.toFixed(2).replace(".", ",");
 const short = (s) => (s.length > 40 ? s.slice(0, 39) + "…" : s).trim();
+// limpa descricao pro cartao: tira valor, verbos e simbolos de markdown
+function cleanDesc(text) {
+  let s = text
+    .replace(/r\$\s*\d[\d.,]*/gi, " ")
+    .replace(/\d[\d.,]*/g, " ")
+    .replace(/\b(gastei|paguei|comprei|gasto|comprar|pagar)\b/gi, " ")
+    .replace(/[*_`\[\]]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) s = text.replace(/[*_`\[\]]/g, "").trim();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 // Estado da confirmacao de "apagar tudo" (na memoria do processo, expira em 2 min).
 const CLEAR_TTL_MS = 2 * 60 * 1000;
 const pendingClear = new Map(); // userId -> { stage, at }
+
+// Estado do "Editar" via botao: espera a proxima mensagem com o novo valor/categoria.
+const EDIT_TTL_MS = 5 * 60 * 1000;
+const pendingEdit = new Map(); // userId -> { id, at }
+
+function expenseCard(description, category, amount, todayTotal, id, extra = "") {
+  const text =
+    "✅ *Novo gasto registrado!*\n\n" +
+    `📝 *Descrição:* ${description}\n` +
+    `🏷️ *Categoria:* ${category}\n` +
+    `💵 *Valor:* R$${fmt(amount)}\n\n` +
+    `📊 Hoje: R$${fmt(todayTotal)}` +
+    extra;
+  return {
+    text,
+    buttons: [
+      { id: `edit:${id}`, title: "✏️ Editar" },
+      { id: `del:${id}`, title: "🗑️ Excluir" },
+    ],
+  };
+}
 
 function isClearAllRequest(text) {
   return /^\/?(apagar?\s+tudo|apagar?\s+todos|limpar\s+tudo|resetar(\s+tudo)?|apagartudo|zerar(\s+tudo)?)\b/.test(
@@ -55,7 +91,6 @@ const TUTORIAL =
   '• "limites" → ver como você está em cada um\n\n' +
   "🔁 Recorrentes\n" +
   '• "recorrente aluguel 1200" → lanço sozinho todo mês\n' +
-  '• "tirar recorrente 1" → remove o recorrente\n' +
   '• "recorrentes" → ver os fixos\n\n' +
   "✏️ Corrigir\n" +
   '• "editar 75" / "editar lazer"\n' +
@@ -250,6 +285,23 @@ export async function handleMessage({ channel, externalId, text }) {
     return "⚠️ Isso vai apagar TODOS os seus lançamentos, pra sempre — não dá pra desfazer.\n\nSe tem certeza, responda: CONFIRMAR";
   }
 
+  // --- Edição via botão: a próxima mensagem traz o novo valor/categoria ---
+  const pe = pendingEdit.get(userId);
+  if (pe && Date.now() - pe.at > EDIT_TTL_MS) pendingEdit.delete(userId);
+  const activeEdit = pendingEdit.get(userId);
+  if (activeEdit) {
+    const amount = extractAmount(text);
+    const category = matchCategoryName(text) || categoryFromKeywords(text);
+    if (amount !== null || category) {
+      pendingEdit.delete(userId);
+      const updated = await updateTransactionById(userId, activeEdit.id, { amount, category });
+      if (!updated) return "Esse lançamento já não existe mais. 🤷";
+      return `Corrigido ✅ R$${fmt(updated.amount)} — ${updated.category}`;
+    }
+    // não parece edição -> cancela e segue o fluxo normal
+    pendingEdit.delete(userId);
+  }
+
   if (isGreeting(text)) return TUTORIAL;
 
   if (isSummaryRequest(text)) {
@@ -386,7 +438,7 @@ export async function handleMessage({ channel, externalId, text }) {
     return "Não achei um valor nessa mensagem 🤔\nManda \"gastei 30 no almoço\", \"recebi 2000 salário\", ou peça \"resumo\".";
   }
 
-  await insertTransaction({
+  const id = await insertTransaction({
     userId,
     amount: parsed.amount,
     category: parsed.category,
@@ -395,10 +447,28 @@ export async function handleMessage({ channel, externalId, text }) {
   });
 
   const total = await getTodayTotal(userId);
-  let reply =
-    `Anotado ✅ R$${fmt(parsed.amount)} — ${parsed.category}\n` +
-    `Hoje você já gastou R$${fmt(total)}.`;
-  reply += await budgetAlert(userId, parsed.category);
-  if (isNew) reply += NEW_USER_HINT;
-  return reply;
+  let extra = await budgetAlert(userId, parsed.category);
+  if (isNew) extra += NEW_USER_HINT;
+  return expenseCard(cleanDesc(parsed.description), parsed.category, parsed.amount, total, id, extra);
+}
+
+// Tratamento dos cliques nos botões (Editar / Excluir). data = "del:<id>" ou "edit:<id>".
+export async function handleCallback({ channel, externalId, data }) {
+  const { id: userId } = await getOrCreateUser(channel, externalId);
+  const sep = data.indexOf(":");
+  const action = data.slice(0, sep);
+  const txId = data.slice(sep + 1);
+
+  if (action === "del") {
+    const removed = await deleteTransactionById(userId, txId);
+    if (!removed) return "Esse lançamento já não existe mais. 🤷";
+    return `Excluído ❌ R$${fmt(removed.amount)} — ${removed.category}`;
+  }
+  if (action === "edit") {
+    const tx = await getTransactionById(userId, txId);
+    if (!tx) return "Esse lançamento já não existe mais. 🤷";
+    pendingEdit.set(userId, { id: txId, at: Date.now() });
+    return '✏️ Manda o novo valor e/ou categoria desse lançamento.\nEx: "75", "lazer", ou "75 lazer".';
+  }
+  return "Ação não reconhecida.";
 }

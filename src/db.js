@@ -18,11 +18,38 @@ export async function getOrCreateUser(channel, externalId) {
 
 // kind: 'expense' (padrao) ou 'income'
 export async function insertTransaction({ userId, amount, category, description, rawMessage, kind = "expense" }) {
-  await pool.query(
+  const { rows } = await pool.query(
     `insert into transactions (user_id, amount, category, description, raw_message, kind)
-       values ($1, $2, $3, $4, $5, $6)`,
+       values ($1, $2, $3, $4, $5, $6)
+       returning id`,
     [userId, amount, category, description, rawMessage, kind]
   );
+  return rows[0].id;
+}
+
+export async function getTransactionById(userId, id) {
+  const { rows } = await pool.query(
+    `select amount, category from transactions where id = $1 and user_id = $2`,
+    [id, userId]
+  );
+  return rows.length ? { amount: parseFloat(rows[0].amount), category: rows[0].category } : null;
+}
+
+export async function deleteTransactionById(userId, id) {
+  const { rows } = await pool.query(
+    `delete from transactions where id = $1 and user_id = $2 returning amount, category`,
+    [id, userId]
+  );
+  return rows.length ? { amount: parseFloat(rows[0].amount), category: rows[0].category } : null;
+}
+
+export async function updateTransactionById(userId, id, { amount = null, category = null }) {
+  const { rows } = await pool.query(
+    `update transactions set amount = coalesce($3, amount), category = coalesce($4, category)
+      where id = $1 and user_id = $2 returning amount, category`,
+    [id, userId, amount, category]
+  );
+  return rows.length ? { amount: parseFloat(rows[0].amount), category: rows[0].category } : null;
 }
 
 export async function insertInstallments({ userId, total, n, category, description, rawMessage }) {

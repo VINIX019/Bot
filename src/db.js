@@ -120,7 +120,7 @@ export async function getPeriodTotals(userId, period) {
 
 export async function getCategoryDetail(userId, category, period) {
   const { rows } = await pool.query(
-    `select description, amount
+    `select description, amount, to_char(occurred_at at time zone '${TZ}', 'DD/MM') as day
        from transactions
       where user_id = $1
         and kind = 'expense'
@@ -130,13 +130,13 @@ export async function getCategoryDetail(userId, category, period) {
       order by occurred_at desc, created_at desc`,
     [userId, category, period]
   );
-  return rows.map((r) => ({ description: r.description, amount: parseFloat(r.amount) }));
+  return rows.map((r) => ({ description: r.description, amount: parseFloat(r.amount), day: r.day }));
 }
 
 // Lista as ENTRADAS do periodo. Pro "resumo entradas".
 export async function getIncomeDetail(userId, period) {
   const { rows } = await pool.query(
-    `select description, amount
+    `select description, amount, to_char(occurred_at at time zone '${TZ}', 'DD/MM') as day
        from transactions
       where user_id = $1
         and kind = 'income'
@@ -145,7 +145,7 @@ export async function getIncomeDetail(userId, period) {
       order by occurred_at desc, created_at desc`,
     [userId, period]
   );
-  return rows.map((r) => ({ description: r.description, amount: parseFloat(r.amount) }));
+  return rows.map((r) => ({ description: r.description, amount: parseFloat(r.amount), day: r.day }));
 }
 
 export async function updateLastTransaction(userId, { amount = null, category = null }) {

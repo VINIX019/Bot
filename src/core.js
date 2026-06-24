@@ -29,6 +29,7 @@ import {
 
 const fmt = (n) => n.toFixed(2).replace(".", ",");
 const short = (s) => (s.length > 40 ? s.slice(0, 39) + "…" : s).trim();
+const hojeBR = () => new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
 // limpa descricao pro cartao: tira valor, verbos e simbolos de markdown
 function cleanDesc(text) {
   let s = text
@@ -55,7 +56,8 @@ function expenseCard(description, category, amount, todayTotal, id, extra = "") 
     "✅ *Novo gasto registrado!*\n\n" +
     `📝 *Descrição:* ${description}\n` +
     `🏷️ *Categoria:* ${category}\n` +
-    `💵 *Valor:* R$${fmt(amount)}\n\n` +
+    `💵 *Valor:* R$${fmt(amount)}\n` +
+    `📅 *Data:* ${hojeBR()}\n\n` +
     `📊 Hoje: R$${fmt(todayTotal)}` +
     extra;
   return {
@@ -156,7 +158,7 @@ async function buildIncomeSummary(userId, period) {
   const items = await getIncomeDetail(userId, period);
   if (items.length === 0) return `Nenhuma entrada ${emptyLabel(period)}. 🙂`;
   const total = items.reduce((s, i) => s + i.amount, 0);
-  const linhas = items.map((i) => `• ${short(i.description)}: R$${fmt(i.amount)}`).join("\n");
+  const linhas = items.map((i) => `• ${i.day} — ${short(i.description)}: R$${fmt(i.amount)}`).join("\n");
   const plural = items.length === 1 ? "entrada" : "entradas";
   return `💰 Entradas ${periodLabel(period)}\n\n${linhas}\n\nTotal: R$${fmt(total)} (${items.length} ${plural})`;
 }
@@ -232,7 +234,7 @@ async function buildSummary(userId, period, category) {
     const items = await getCategoryDetail(userId, category, period);
     if (items.length === 0) return `Nenhum gasto em ${category} ${emptyLabel(period)}. 🙂`;
     const total = items.reduce((s, i) => s + i.amount, 0);
-    const linhas = items.map((i) => `• ${short(i.description)}: R$${fmt(i.amount)}`).join("\n");
+    const linhas = items.map((i) => `• ${i.day} — ${short(i.description)}: R$${fmt(i.amount)}`).join("\n");
     const plural = items.length === 1 ? "lançamento" : "lançamentos";
     return `📋 ${category} ${periodLabel(period)}\n\n${linhas}\n\nTotal: R$${fmt(total)} (${items.length} ${plural})`;
   }

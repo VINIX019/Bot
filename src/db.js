@@ -116,8 +116,8 @@ export async function getPeriodTotals(userId, period) {
     else if (r.kind === "reserve") reserve = parseFloat(r.total);
     else expense += parseFloat(r.total);
   }
-  // guardar na reserva abate do disponível; tirar (negativo) devolve
-  return { income, expense, reserve, balance: income - expense - reserve };
+  // reserva fica à parte: não entra no saldo (saldo = entradas − saídas)
+  return { income, expense, reserve, balance: income - expense };
 }
 
 // Total acumulado da reserva (todo o histórico).

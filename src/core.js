@@ -54,15 +54,9 @@ const pendingClear = new Map(); // userId -> { stage, at }
 const EDIT_TTL_MS = 5 * 60 * 1000;
 const pendingEdit = new Map(); // userId -> { id, at }
 
-function expenseCard(description, category, amount, todayTotal, id, extra = "") {
-  const text =
-    "✅ *Novo gasto registrado!*\n\n" +
-    `📝 *Descrição:* ${description}\n` +
-    `🏷️ *Categoria:* ${category}\n` +
-    `💵 *Valor:* R$${fmt(amount)}\n` +
-    `📅 *Data:* ${hojeBR()}\n\n` +
-    `📊 Hoje: R$${fmt(todayTotal)}` +
-    extra;
+function card(title, lines, footer, id) {
+  let text = `${title}\n\n` + lines.join("\n");
+  if (footer) text += `\n\n${footer}`;
   return {
     text,
     buttons: [
@@ -70,6 +64,15 @@ function expenseCard(description, category, amount, todayTotal, id, extra = "") 
       { id: `del:${id}`, title: "🗑️ Excluir" },
     ],
   };
+}
+
+function txFields(descricao, categoria, valor) {
+  return [
+    `📝 *Descrição:* ${descricao}`,
+    `🏷️ *Categoria:* ${categoria}`,
+    `💵 *Valor:* R$${fmt(valor)}`,
+    `📅 *Data:* ${hojeBR()}`,
+  ];
 }
 
 function isClearAllRequest(text) {
@@ -286,8 +289,8 @@ async function buildSummary(userId, period, category) {
   let out = `📊 Resumo ${periodLabel(period)}\n\n`;
   if (cats) out += cats + "\n\n";
   out += `Saídas: R$${fmt(totals.expense)}\n` + `Entradas: R$${fmt(totals.income)}\n`;
-  if (totals.reserve !== 0) out += `Guardado: R$${fmt(totals.reserve)}\n`;
   out += `Saldo: R$${fmt(totals.balance)} ${icon}`;
+  if (totals.reserve !== 0) out += `\n\n🏦 Guardado (à parte): R$${fmt(totals.reserve)}`;
   return out;
 }
 
@@ -428,11 +431,16 @@ export async function handleMessage({ channel, externalId, text }) {
       return `↩️ Tirei R$${fmt(reserve.amount)} da reserva (voltou pro disponível).\n${await reserveLine(userId)}`;
     }
     // deposit
-    await insertTransaction({
+    const id = await insertTransaction({
       userId, amount: reserve.amount, category: "Reserva",
       description: text, rawMessage: text, kind: "reserve",
     });
-    return `🏦 Guardei R$${fmt(reserve.amount)} na reserva.\n${await reserveLine(userId)}`;
+    return card(
+      "🏦 *Guardado na reserva!*",
+      [`💵 *Valor:* R$${fmt(reserve.amount)}`, `📅 *Data:* ${hojeBR()}`],
+      await reserveLine(userId),
+      id
+    );
   }
 
   // Estorno / devolucao (dinheiro que volta) -> gasto negativo na categoria
@@ -460,7 +468,7 @@ export async function handleMessage({ channel, externalId, text }) {
   const income = parseIncome(text);
   if (income) {
     const category = incomeSource(text);
-    await insertTransaction({
+    const id = await insertTransaction({
       userId,
       amount: income.amount,
       category,
@@ -470,11 +478,9 @@ export async function handleMessage({ channel, externalId, text }) {
     });
     const totals = await getPeriodTotals(userId, "month");
     const icon = totals.balance >= 0 ? "🟢" : "🔴";
-    let reply =
-      `Entrada registrada ✅ +R$${fmt(income.amount)} — ${category}\n` +
-      `Saldo do mês: R$${fmt(totals.balance)} ${icon}`;
-    if (isNew) reply += NEW_USER_HINT;
-    return reply;
+    let footer = `📊 Saldo do mês: R$${fmt(totals.balance)} ${icon}`;
+    if (isNew) footer += NEW_USER_HINT;
+    return card("💰 *Entrada registrada!*", txFields(cleanDesc(income.description), category, income.amount), footer, id);
   }
 
   // Compra parcelada
@@ -513,9 +519,10 @@ export async function handleMessage({ channel, externalId, text }) {
   });
 
   const total = await getTodayTotal(userId);
-  let extra = await budgetAlert(userId, parsed.category);
-  if (isNew) extra += NEW_USER_HINT;
-  return expenseCard(cleanDesc(parsed.description), parsed.category, parsed.amount, total, id, extra);
+  let footer = `📊 Hoje: R$${fmt(total)}`;
+  footer += await budgetAlert(userId, parsed.category);
+  if (isNew) footer += NEW_USER_HINT;
+  return card("✅ *Novo gasto registrado!*", txFields(cleanDesc(parsed.description), parsed.category, parsed.amount), footer, id);
 }
 
 // Tratamento dos cliques nos botões (Editar / Excluir). data = "del:<id>" ou "edit:<id>".

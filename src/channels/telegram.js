@@ -21,6 +21,11 @@ async function sendMessage(chatId, text, extra = {}) {
   });
 }
 
+// Usado pelo agendador de lembretes pra mandar mensagem espontânea.
+export async function notify(chatId, text) {
+  await sendMessage(chatId, text);
+}
+
 async function answerCallback(id) {
   await fetch(`${API}/answerCallbackQuery`, {
     method: "POST",

@@ -325,3 +325,83 @@ export async function deleteAllData(userId) {
   await pool.query(`delete from reserve_goals where user_id = $1`, [userId]);
   return res.rowCount;
 }
+// ---------- Contas a pagar (boletos) ----------
+export async function addBill(userId, { description, amount, dueDate, barcode, category }) {
+  const { rows } = await pool.query(
+    `insert into bills (user_id, description, amount, due_date, barcode, category)
+       values ($1, $2, $3, $4, $5, $6) returning id`,
+    [userId, description, amount, dueDate, barcode, category]
+  );
+  return rows[0].id;
+}
+
+export async function listPendingBills(userId) {
+  const { rows } = await pool.query(
+    `select id, description, amount, barcode, category,
+            to_char(due_date, 'DD/MM/YYYY') as due_fmt,
+            (due_date - (now() at time zone '${TZ}')::date) as days_left
+       from bills
+      where user_id = $1 and paid = false
+      order by due_date asc nulls last, created_at`,
+    [userId]
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    description: r.description,
+    amount: r.amount != null ? parseFloat(r.amount) : null,
+    barcode: r.barcode,
+    category: r.category,
+    dueFmt: r.due_fmt,
+    daysLeft: r.days_left != null ? parseInt(r.days_left, 10) : null,
+  }));
+}
+
+export async function getBillById(userId, id) {
+  const { rows } = await pool.query(
+    `select id, description, amount, barcode, category, paid from bills where id = $1 and user_id = $2`,
+    [id, userId]
+  );
+  if (!rows.length) return null;
+  const r = rows[0];
+  return { id: r.id, description: r.description, amount: r.amount != null ? parseFloat(r.amount) : null, barcode: r.barcode, category: r.category, paid: r.paid };
+}
+
+export async function markBillPaid(userId, id) {
+  const { rows } = await pool.query(
+    `update bills set paid = true where id = $1 and user_id = $2 and paid = false
+       returning description, amount, category`,
+    [id, userId]
+  );
+  if (!rows.length) return null;
+  const r = rows[0];
+  return { description: r.description, amount: r.amount != null ? parseFloat(r.amount) : null, category: r.category };
+}
+
+export async function deleteBillById(userId, id) {
+  const { rows } = await pool.query(
+    `delete from bills where id = $1 and user_id = $2 returning description`,
+    [id, userId]
+  );
+  return rows.length ? { description: rows[0].description } : null;
+}
+
+// Pro lembrete diario (so Telegram): contas nao pagas que vencem ate X dias (inclui vencidas).
+export async function getDueBillsForChannel(channel, withinDays) {
+  const { rows } = await pool.query(
+    `select u.external_id, b.description, b.amount,
+            to_char(b.due_date, 'DD/MM') as due_fmt,
+            (b.due_date - (now() at time zone '${TZ}')::date) as days_left
+       from bills b join users u on u.id = b.user_id
+      where u.channel = $1 and b.paid = false and b.due_date is not null
+        and b.due_date <= (now() at time zone '${TZ}')::date + ($2 || ' day')::interval
+      order by u.external_id, b.due_date`,
+    [channel, withinDays]
+  );
+  return rows.map((r) => ({
+    externalId: r.external_id,
+    description: r.description,
+    amount: r.amount != null ? parseFloat(r.amount) : null,
+    dueFmt: r.due_fmt,
+    daysLeft: r.days_left != null ? parseInt(r.days_left, 10) : null,
+  }));
+}

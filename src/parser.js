@@ -101,3 +101,101 @@ export async function parseMessage(text) {
   if (ruled) return { ...ruled, category: ruled.category || "Outros" };
   return null;
 }
+// ---------- Contas a pagar (boletos) ----------
+
+const brtToday = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }); // YYYY-MM-DD
+const ymd = (y, m, d) => `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+const addDaysISO = (iso, n) => {
+  const d = new Date(iso + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+
+// Extrai a linha digitavel do boleto (44 a 48 digitos, podendo ter pontos/espacos).
+export function extractBarcode(text) {
+  const m = text.match(/\d[\d.\s]{38,}\d/);
+  if (!m) return null;
+  const digits = m[0].replace(/\D/g, "");
+  if (digits.length >= 44 && digits.length <= 48) return { code: digits, raw: m[0] };
+  if (digits.length > 48) {
+    // pegou números colados antes do código; fica com o final (47 bancário / 48 arrecadação)
+    const last48 = digits.slice(-48);
+    const code = last48.startsWith("8") ? last48 : digits.slice(-47);
+    return { code, raw: m[0] };
+  }
+  return null;
+}
+
+// Acha um vencimento no texto. Retorna { date: 'YYYY-MM-DD', raw }.
+export function parseDueDate(text) {
+  const today = brtToday();
+  const [ty, tm] = today.split("-").map(Number);
+  let m;
+  if ((m = text.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/))) {
+    const d = +m[1], mo = +m[2];
+    let y = m[3] ? +m[3] : ty;
+    if (m[3] && m[3].length === 2) y = 2000 + (+m[3]);
+    if (d > 31 || mo > 12 || d < 1 || mo < 1) return null;
+    let iso = ymd(y, mo, d);
+    if (!m[3] && iso < today) iso = ymd(y + 1, mo, d);
+    return { date: iso, raw: m[0] };
+  }
+  if ((m = text.match(/\bdia\s+(\d{1,2})\b/i))) {
+    const d = +m[1];
+    if (d > 31 || d < 1) return null;
+    let mo = tm, y = ty;
+    let iso = ymd(y, mo, d);
+    if (iso < today) { mo++; if (mo > 12) { mo = 1; y++; } iso = ymd(y, mo, d); }
+    return { date: iso, raw: m[0] };
+  }
+  if (/\bamanh[ãa]\b/i.test(text)) return { date: addDaysISO(today, 1), raw: text.match(/\bamanh[ãa]\b/i)[0] };
+  if (/\bhoje\b/i.test(text)) return { date: today, raw: "hoje" };
+  return null;
+}
+
+export function parseBill(text) {
+  const t = text.toLowerCase().trim();
+
+  // Listar
+  if (/^\/?(contas|minhas contas|boletos|meus boletos)\s*$/.test(t)) return { action: "list" };
+
+  // Dar baixa: "paguei conta 1", "conta luz paga", "paguei a conta luz"
+  if (/\bconta\b/.test(t) && /\bpag(uei|a|o|ar|ou)\b/.test(t)) {
+    const ref = t.replace(/\bpag\w+\b/g, " ").replace(/\b(a|as|o|os|de|da|do|minha|conta|contas)\b/g, " ").trim();
+    return { action: "pay", ref };
+  }
+
+  // Remover: "remover conta 2", "excluir conta luz"
+  if (/\bconta\b/.test(t) && /\b(remover|excluir|tirar|apagar|cancelar)\b/.test(t)) {
+    const ref = t.replace(/\b(remover|excluir|tirar|apagar|cancelar)\b/g, " ").replace(/\b(a|as|o|os|de|da|do|minha|conta|contas)\b/g, " ").trim();
+    return { action: "remove", ref };
+  }
+
+  // Adicionar: extrai data PRIMEIRO (pra não colidir com o código de barras), depois código, depois valor
+  const due = parseDueDate(text);
+  let work = due ? text.replace(due.raw, " ") : text;
+  const bc = extractBarcode(work);
+  const isBill = /\bboleto\b|\bfatura\b/.test(t) || (/\bconta\b/.test(t) && (due || /\bvenc/.test(t)));
+  if (!isBill && !bc) return null;
+  if (bc) work = work.replace(bc.raw, " ");
+  const amount = extractAmount(work);
+
+  let desc = work
+    .replace(/r\$\s*\d[\d.,]*/gi, " ")
+    .replace(/\b\d[\d.,]*\b/g, " ")
+    .replace(/\bvenc\w*\b/gi, " ")
+    .replace(/\b(boleto|fatura|conta|c[oó]digo|cod|linha|digit[aá]vel)\b/gi, " ")
+    .replace(/[*_`\/]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!desc) desc = "Conta";
+  desc = desc.charAt(0).toUpperCase() + desc.slice(1);
+
+  return {
+    action: "add",
+    description: desc,
+    amount,
+    dueDate: due ? due.date : null,
+    barcode: bc ? bc.code : null,
+  };
+}

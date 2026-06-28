@@ -1,4 +1,4 @@
-import { parseMessage, parseInstallment, parseIncome, parseRefund, extractAmount } from "./parser.js";
+import { parseMessage, parseInstallment, parseIncome, parseRefund, extractAmount, parseBill } from "./parser.js";
 import { matchCategoryName, categoryFromKeywords } from "./categories.js";
 import {
   getOrCreateUser,
@@ -28,6 +28,10 @@ import {
   deactivateRecurring,
   materializeRecurring,
   deleteAllData,
+  addBill,
+  listPendingBills,
+  markBillPaid,
+  deleteBillById,
 } from "./db.js";
 
 const fmt = (n) => n.toFixed(2).replace(".", ",");
@@ -104,6 +108,10 @@ const TUTORIAL =
   '• "guardei 200 na reserva"\n' +
   '• "meta reserva 5000" → acompanho seu progresso\n' +
   '• "reserva" → quanto você já guardou\n\n' +
+  "🧾 Contas a pagar\n" +
+  '• "conta luz 120 vence 30/06" (pode colar o código do boleto)\n' +
+  '• "contas" → ver as pendentes\n' +
+  '• "paguei conta 1" → dá baixa e vira gasto\n\n' +
   "✏️ Corrigir\n" +
   '• "editar 75" / "editar lazer"\n' +
   '• "apagar" → apaga o último\n' +
@@ -294,6 +302,40 @@ async function buildSummary(userId, period, category) {
   return out;
 }
 
+function fmtDateISO(iso) {
+  if (!iso) return null;
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+function billStatus(b) {
+  if (b.daysLeft == null) return "sem vencimento";
+  if (b.daysLeft < 0) return `🔴 vencida há ${-b.daysLeft}d`;
+  if (b.daysLeft === 0) return "🟠 vence hoje";
+  if (b.daysLeft <= 3) return `🟡 vence em ${b.daysLeft}d`;
+  return `vence ${b.dueFmt}`;
+}
+
+function resolveBill(bills, ref) {
+  if (!ref) return bills.length === 1 ? bills[0] : null;
+  const n = parseInt(ref, 10);
+  if (Number.isInteger(n) && n >= 1 && n <= bills.length) return bills[n - 1];
+  const key = ref.toLowerCase().trim();
+  return key ? bills.find((b) => b.description.toLowerCase().includes(key)) || null : null;
+}
+
+async function buildBillsList(userId) {
+  const bills = await listPendingBills(userId);
+  if (!bills.length) return "Você não tem contas pendentes. 🎉";
+  const linhas = bills.map((b, i) => {
+    const val = b.amount != null ? ` — R$${fmt(b.amount)}` : "";
+    let line = `${i + 1}. ${b.description}${val} (${billStatus(b)})`;
+    if (b.barcode) line += `\n   🔢 ${b.barcode}`;
+    return line;
+  }).join("\n");
+  return `📋 Contas a pagar\n\n${linhas}\n\nPra dar baixa: "paguei conta 1".\nPra remover: "remover conta 2".`;
+}
+
 export async function handleMessage({ channel, externalId, text }) {
   const { id: userId, isNew } = await getOrCreateUser(channel, externalId);
 
@@ -348,6 +390,51 @@ export async function handleMessage({ channel, externalId, text }) {
     if (wantsIncome(text)) return await buildIncomeSummary(userId, period);
     const category = matchCategoryName(text) || categoryFromKeywords(text);
     return await buildSummary(userId, period, category);
+  }
+
+  // --- Contas a pagar (boletos) ---
+  const bill = parseBill(text);
+  if (bill) {
+    if (bill.action === "list") return await buildBillsList(userId);
+
+    if (bill.action === "pay" || bill.action === "remove") {
+      const bills = await listPendingBills(userId);
+      if (!bills.length) return "Você não tem contas pendentes. 🎉";
+      const target = resolveBill(bills, bill.ref);
+      if (!target) return 'Não achei essa conta. Manda "contas" pra ver a lista numerada.';
+      if (bill.action === "pay") {
+        const paid = await markBillPaid(userId, target.id);
+        if (!paid) return "Essa conta já foi paga. 🤷";
+        if (paid.amount != null) {
+          await insertTransaction({
+            userId, amount: paid.amount, category: paid.category || "Casa",
+            description: paid.description, rawMessage: "(conta paga)",
+          });
+          return `✅ Conta paga: ${paid.description} — R$${fmt(paid.amount)} lançado em ${paid.category || "Casa"}.`;
+        }
+        return `✅ Conta paga: ${paid.description}.`;
+      }
+      const removed = await deleteBillById(userId, target.id);
+      return `🗑️ Conta removida: ${removed.description}.`;
+    }
+
+    // add
+    const category = categoryFromKeywords(text) || "Casa";
+    const id = await addBill(userId, {
+      description: bill.description, amount: bill.amount,
+      dueDate: bill.dueDate, barcode: bill.barcode, category,
+    });
+    const lines = [`📝 *Descrição:* ${bill.description}`];
+    if (bill.amount != null) lines.push(`💵 *Valor:* R$${fmt(bill.amount)}`);
+    lines.push(`📅 *Vencimento:* ${fmtDateISO(bill.dueDate) || "não informado"}`);
+    if (bill.barcode) lines.push(`🔢 *Código:* ${bill.barcode}`);
+    return {
+      text: "🧾 *Conta registrada!*\n\n" + lines.join("\n"),
+      buttons: [
+        { id: `pay:${id}`, title: "✅ Paguei" },
+        { id: `delbill:${id}`, title: "🗑️ Excluir" },
+      ],
+    };
   }
 
   if (isDeleteRequest(text)) {
@@ -542,6 +629,23 @@ export async function handleCallback({ channel, externalId, data }) {
     if (!tx) return "Esse lançamento já não existe mais. 🤷";
     pendingEdit.set(userId, { id: txId, at: Date.now() });
     return '✏️ Manda o novo valor e/ou categoria desse lançamento.\nEx: "75", "lazer", ou "75 lazer".';
+  }
+  if (action === "pay") {
+    const paid = await markBillPaid(userId, txId);
+    if (!paid) return "Essa conta já foi paga ou não existe mais. 🤷";
+    if (paid.amount != null) {
+      await insertTransaction({
+        userId, amount: paid.amount, category: paid.category || "Casa",
+        description: paid.description, rawMessage: "(conta paga)",
+      });
+      return `✅ Conta paga: ${paid.description} — R$${fmt(paid.amount)} lançado em ${paid.category || "Casa"}.`;
+    }
+    return `✅ Conta paga: ${paid.description}.`;
+  }
+  if (action === "delbill") {
+    const removed = await deleteBillById(userId, txId);
+    if (!removed) return "Essa conta não existe mais. 🤷";
+    return `🗑️ Conta removida: ${removed.description}.`;
   }
   return "Ação não reconhecida.";
 }

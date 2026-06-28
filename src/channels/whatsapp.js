@@ -24,11 +24,15 @@ async function sendReply(to, reply) {
 }
 
 async function send(payload) {
-  await fetch(`${GRAPH}/${PHONE_ID}/messages`, {
+  const res = await fetch(`${GRAPH}/${PHONE_ID}/messages`, {
     method: "POST",
     headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  if (!res.ok) {
+    const erro = await res.text();
+    console.error("whatsapp send FALHOU:", res.status, erro);
+  }
 }
 
 export function mountWhatsApp(app) {

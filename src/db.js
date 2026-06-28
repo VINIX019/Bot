@@ -317,11 +317,11 @@ export async function materializeRecurring(userId) {
   );
 }
 
-// Apaga TUDO do usuario (transacoes + recorrentes + limites). Pro "apagar tudo".
+// Apaga TUDO do usuario (transacoes + recorrentes + limites + meta de reserva).
 export async function deleteAllData(userId) {
   const res = await pool.query(`delete from transactions where user_id = $1`, [userId]);
   await pool.query(`delete from recurring where user_id = $1`, [userId]);
   await pool.query(`delete from budgets where user_id = $1`, [userId]);
-  await pool.query(`update users set reserve_goal = null where id = $1`, [userId]);
+  await pool.query(`delete from reserve_goals where user_id = $1`, [userId]);
   return res.rowCount;
 }

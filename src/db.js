@@ -405,3 +405,11 @@ export async function getDueBillsForChannel(channel, withinDays) {
     daysLeft: r.days_left != null ? parseInt(r.days_left, 10) : null,
   }));
 }
+
+export async function updateBillBarcode(userId, id, barcode) {
+  const { rows } = await pool.query(
+    `update bills set barcode = $3 where id = $1 and user_id = $2 returning description`,
+    [id, userId, barcode]
+  );
+  return rows.length ? { description: rows[0].description } : null;
+}

@@ -1,4 +1,4 @@
-import { parseMessage, parseInstallment, parseIncome, parseRefund, extractAmount, parseBill } from "./parser.js";
+import { parseMessage, parseInstallment, parseIncome, parseRefund, extractAmount, parseBill, parseDueDate, extractBarcode } from "./parser.js";
 import { matchCategoryName, categoryFromKeywords } from "./categories.js";
 import { decodeBoleto, validateBoleto, extractBoletoInfo } from "./boleto.js";
 import {
@@ -33,6 +33,7 @@ import {
   listPendingBills,
   markBillPaid,
   deleteBillById,
+  updateBillBarcode,
 } from "./db.js";
 
 const fmt = (n) => n.toFixed(2).replace(".", ",");
@@ -110,7 +111,8 @@ const TUTORIAL =
   '• "meta reserva 5000" → acompanho seu progresso\n' +
   '• "reserva" → quanto você já guardou\n\n' +
   "🧾 Contas a pagar\n" +
-  '• "conta luz 120 vence 30/06" (pode colar o código do boleto)\n' +
+  '• "registrar boleto" → cadastro passo a passo (com foto ou código)\n' +
+  '• "conta luz 120 vence 30/06" → cadastro rápido numa linha\n' +
   '• "contas" → ver as pendentes\n' +
   '• "paguei conta 1" → dá baixa e vira gasto\n\n' +
   "✏️ Corrigir\n" +
@@ -337,6 +339,98 @@ async function buildBillsList(userId) {
   return `📋 Contas a pagar\n\n${linhas}\n\nPra dar baixa: "paguei conta 1".\nPra remover: "remover conta 2".`;
 }
 
+// --- Cadastro guiado de boleto (valor -> nome -> vencimento -> registra -> código opcional) ---
+const BILLFLOW_TTL_MS = 10 * 60 * 1000;
+const pendingBill = new Map(); // userId -> { stage, amount, name, due, barcode, billId, at }
+
+function startsBillFlow(text) {
+  return /^\/?(registrar|cadastrar|nov[oa]|adicionar)\s+(boleto|conta)\b/.test(text.toLowerCase().trim());
+}
+
+function billQuestion(stage) {
+  if (stage === "amount") return "💵 Qual o valor da conta? (ex: 120 ou 89,90)";
+  if (stage === "name") return "📝 Qual o nome dessa conta? (ex: Luz, Internet)";
+  if (stage === "due") return '📅 Qual o vencimento? (ex: "30/06", "dia 10") — ou manda "sem".';
+  if (stage === "code_choice") return "Quer adicionar o código de barras? (sim/não)";
+  if (stage === "code_input") return "Manda a *foto* do boleto ou *cola o código*.";
+  return "";
+}
+
+async function finalizeBill(st) {
+  const lines = [`📝 *Descrição:* ${st.name}`];
+  if (st.amount != null) lines.push(`💵 *Valor:* R$${fmt(st.amount)}`);
+  lines.push(`📅 *Vencimento:* ${fmtDateISO(st.due) || "não informado"}`);
+  if (st.barcode) lines.push(`🔢 *Código:* ${st.barcode}`);
+  return {
+    text: "🧾 *Conta registrada!*\n\n" + lines.join("\n"),
+    buttons: [
+      { id: `pay:${st.billId}`, title: "✅ Paguei" },
+      { id: `delbill:${st.billId}`, title: "🗑️ Excluir" },
+    ],
+  };
+}
+
+// Registra o boleto assim que temos valor+nome+vencimento. Devolve o billId.
+async function registerPendingBill(userId, st) {
+  const category = categoryFromKeywords(st.name) || "Casa";
+  st.billId = await addBill(userId, {
+    description: st.name, amount: st.amount, dueDate: st.due,
+    barcode: st.barcode || null, category,
+  });
+  return st.billId;
+}
+
+// Avança o fluxo a partir de uma mensagem de texto. Retorna a resposta, ou null se não há fluxo ativo.
+async function advanceBillFlow(userId, text) {
+  const st = pendingBill.get(userId);
+  if (!st) return null;
+  if (Date.now() - st.at > BILLFLOW_TTL_MS) { pendingBill.delete(userId); return null; }
+  const t = text.trim().toLowerCase();
+  if (/^(cancelar|cancela|parar|sair)$/.test(t)) { pendingBill.delete(userId); return "Cadastro cancelado."; }
+  st.at = Date.now();
+
+  if (st.stage === "amount") {
+    const a = extractAmount(text);
+    if (a == null) return 'Não entendi o valor. Manda só o número (ex: "120"). Ou "cancelar".';
+    st.amount = a; st.stage = "name";
+    return billQuestion("name");
+  }
+  if (st.stage === "name") {
+    const name = text.trim().replace(/[*_`]/g, "");
+    if (!name) return billQuestion("name");
+    st.name = name.charAt(0).toUpperCase() + name.slice(1);
+    st.stage = "due";
+    return billQuestion("due");
+  }
+  if (st.stage === "due") {
+    if (/^(sem|n[ãa]o|pular|skip)$/.test(t)) st.due = null;
+    else {
+      const d = parseDueDate(text);
+      if (!d) return 'Não entendi a data. Manda "30/06", "dia 10", ou "sem".';
+      st.due = d.date;
+    }
+    await registerPendingBill(userId, st);
+    if (st.barcode) { pendingBill.delete(userId); return await finalizeBill(st); }
+    st.stage = "code_choice";
+    return "Conta registrada! ✅ " + billQuestion("code_choice");
+  }
+  if (st.stage === "code_choice") {
+    if (/^(sim|s|quero|claro|pode)$/.test(t)) { st.stage = "code_input"; return billQuestion("code_input"); }
+    pendingBill.delete(userId);
+    return await finalizeBill(st);
+  }
+  if (st.stage === "code_input") {
+    const bc = extractBarcode(text);
+    if (!bc) return 'Não vi um código válido. Cola a linha digitável (uns 47 números) ou manda a foto. Ou "cancelar".';
+    if (!validateBoleto(bc.code)) return "Esse código não passou na validação — confere e manda de novo, ou a foto.";
+    await updateBillBarcode(userId, st.billId, bc.code);
+    st.barcode = bc.code;
+    pendingBill.delete(userId);
+    return await finalizeBill(st);
+  }
+  return null;
+}
+
 export async function handleMessage({ channel, externalId, text }) {
   const { id: userId, isNew } = await getOrCreateUser(channel, externalId);
 
@@ -382,6 +476,14 @@ export async function handleMessage({ channel, externalId, text }) {
     }
     // não parece edição -> cancela e segue o fluxo normal
     pendingEdit.delete(userId);
+  }
+
+  // Cadastro guiado de boleto em andamento?
+  const billFlow = await advanceBillFlow(userId, text);
+  if (billFlow !== null) return billFlow;
+  if (startsBillFlow(text)) {
+    pendingBill.set(userId, { stage: "amount", amount: null, name: null, due: null, barcode: null, billId: null, at: Date.now() });
+    return billQuestion("amount");
   }
 
   if (isGreeting(text)) return TUTORIAL;
@@ -651,36 +753,33 @@ export async function handleCallback({ channel, externalId, data }) {
   return "Ação não reconhecida.";
 }
 
-// Foto de boleto: decodifica, valida e registra como conta.
+// Foto de boleto: alimenta o cadastro guiado (o valor vem da pessoa, não da leitura).
 export async function handlePhoto({ channel, externalId, imageBuffer }) {
   const { id: userId } = await getOrCreateUser(channel, externalId);
-
+  const st = pendingBill.get(userId);
   const code = await decodeBoleto(imageBuffer);
-  if (!code) {
-    return "Não consegui ler o boleto 😕. Tenta uma foto mais reta, perto do código e bem iluminada — ou cola o número (a linha digitável) que eu registro.";
-  }
-  if (!validateBoleto(code)) {
-    return "Li o código, mas ele não passou na validação (devo ter lido um dígito errado). Cola o número do boleto que eu registro certinho.";
+
+  // Fluxo em andamento esperando o código
+  if (st && st.stage === "code_input") {
+    if (!code || !validateBoleto(code)) {
+      return "Não consegui ler o código da foto 😕. Tenta mais reta/iluminada, ou cola o número.";
+    }
+    await updateBillBarcode(userId, st.billId, code);
+    st.barcode = code;
+    pendingBill.delete(userId);
+    return await finalizeBill(st);
   }
 
-  const info = extractBoletoInfo(code);
-  const id = await addBill(userId, {
-    description: "Boleto",
-    amount: info.amount,
-    dueDate: info.dueDate,
-    barcode: code,
-    category: "Outros",
-  });
+  // Fluxo em andamento em outra etapa: guarda o código e segue de onde estava
+  if (st) {
+    if (code && validateBoleto(code)) { st.barcode = code; st.at = Date.now(); return "Li o código ✅. " + billQuestion(st.stage); }
+    return billQuestion(st.stage);
+  }
 
-  const lines = ["📝 *Descrição:* Boleto _(renomeie se quiser)_"];
-  if (info.amount != null) lines.push(`💵 *Valor:* R$${fmt(info.amount)}`);
-  lines.push(`📅 *Vencimento:* ${fmtDateISO(info.dueDate) || "não identificado"}`);
-  lines.push(`🔢 *Código:* ${code}`);
-  return {
-    text: "🧾 *Boleto lido!*\n\n" + lines.join("\n"),
-    buttons: [
-      { id: `pay:${id}`, title: "✅ Paguei" },
-      { id: `delbill:${id}`, title: "🗑️ Excluir" },
-    ],
-  };
+  // Foto solta: começa o cadastro guiado já com o código (a pessoa informa o valor)
+  if (!code || !validateBoleto(code)) {
+    return "Não consegui ler o boleto 😕. Tenta uma foto mais reta e iluminada, cola o número, ou manda \"registrar boleto\" pra cadastrar na mão.";
+  }
+  pendingBill.set(userId, { stage: "amount", amount: null, name: null, due: null, barcode: code, billId: null, at: Date.now() });
+  return "Li o código ✅. Agora me diz o *valor* da conta. (ex: 120)";
 }

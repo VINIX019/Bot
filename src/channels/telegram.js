@@ -1,4 +1,4 @@
-import { handleMessage, handleCallback } from "../core.js";
+import { handleMessage, handleCallback, handlePhoto } from "../core.js";
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const API = `https://api.telegram.org/bot${TOKEN}`;
@@ -34,6 +34,16 @@ async function answerCallback(id) {
   });
 }
 
+// Baixa um arquivo do Telegram (foto) e devolve o Buffer.
+async function downloadFile(fileId) {
+  const r = await fetch(`${API}/getFile?file_id=${fileId}`);
+  const j = await r.json();
+  const path = j?.result?.file_path;
+  if (!path) return null;
+  const f = await fetch(`https://api.telegram.org/file/bot${TOKEN}/${path}`);
+  return Buffer.from(await f.arrayBuffer());
+}
+
 async function processUpdate(update) {
   // Clique em botao
   if (update.callback_query) {
@@ -53,9 +63,29 @@ async function processUpdate(update) {
     return;
   }
 
-  // Mensagem de texto
   const msg = update.message;
-  if (!msg?.text) return;
+  if (!msg) return;
+
+  // Foto (boleto pra escanear)
+  if (msg.photo?.length) {
+    try {
+      const fileId = msg.photo[msg.photo.length - 1].file_id; // maior resolução
+      const buffer = await downloadFile(fileId);
+      if (!buffer) {
+        await sendMessage(msg.chat.id, "Não consegui baixar a imagem 😕 tenta de novo.");
+        return;
+      }
+      const reply = await handlePhoto({ channel: "telegram", externalId: String(msg.chat.id), imageBuffer: buffer });
+      await sendReply(msg.chat.id, reply);
+    } catch (e) {
+      console.error("telegram photo error:", e);
+      await sendMessage(msg.chat.id, "Deu ruim ao ler a imagem 😅 tenta uma foto mais nítida ou cola o número do boleto.");
+    }
+    return;
+  }
+
+  // Mensagem de texto
+  if (!msg.text) return;
   try {
     const reply = await handleMessage({
       channel: "telegram",

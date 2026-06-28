@@ -1,5 +1,6 @@
 import { parseMessage, parseInstallment, parseIncome, parseRefund, extractAmount, parseBill } from "./parser.js";
 import { matchCategoryName, categoryFromKeywords } from "./categories.js";
+import { decodeBoleto, validateBoleto, extractBoletoInfo } from "./boleto.js";
 import {
   getOrCreateUser,
   insertTransaction,
@@ -648,4 +649,38 @@ export async function handleCallback({ channel, externalId, data }) {
     return `🗑️ Conta removida: ${removed.description}.`;
   }
   return "Ação não reconhecida.";
+}
+
+// Foto de boleto: decodifica, valida e registra como conta.
+export async function handlePhoto({ channel, externalId, imageBuffer }) {
+  const { id: userId } = await getOrCreateUser(channel, externalId);
+
+  const code = await decodeBoleto(imageBuffer);
+  if (!code) {
+    return "Não consegui ler o boleto 😕. Tenta uma foto mais reta, perto do código e bem iluminada — ou cola o número (a linha digitável) que eu registro.";
+  }
+  if (!validateBoleto(code)) {
+    return "Li o código, mas ele não passou na validação (devo ter lido um dígito errado). Cola o número do boleto que eu registro certinho.";
+  }
+
+  const info = extractBoletoInfo(code);
+  const id = await addBill(userId, {
+    description: "Boleto",
+    amount: info.amount,
+    dueDate: info.dueDate,
+    barcode: code,
+    category: "Outros",
+  });
+
+  const lines = ["📝 *Descrição:* Boleto _(renomeie se quiser)_"];
+  if (info.amount != null) lines.push(`💵 *Valor:* R$${fmt(info.amount)}`);
+  lines.push(`📅 *Vencimento:* ${fmtDateISO(info.dueDate) || "não identificado"}`);
+  lines.push(`🔢 *Código:* ${code}`);
+  return {
+    text: "🧾 *Boleto lido!*\n\n" + lines.join("\n"),
+    buttons: [
+      { id: `pay:${id}`, title: "✅ Paguei" },
+      { id: `delbill:${id}`, title: "🗑️ Excluir" },
+    ],
+  };
 }

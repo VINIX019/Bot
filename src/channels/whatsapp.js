@@ -52,8 +52,12 @@ export function mountWhatsApp(app) {
     const msg = value?.messages?.[0];
 
     if (!msg) {
-      if (value?.statuses) console.log("whatsapp: evento de status (entrega/leitura), ignorado");
-      else console.log("whatsapp: evento sem mensagem:", JSON.stringify(value));
+      if (value?.statuses) {
+        const s = value.statuses[0];
+        console.log("whatsapp status:", s?.status, "| para:", s?.recipient_id, s?.errors ? "| erros: " + JSON.stringify(s.errors) : "");
+      } else {
+        console.log("whatsapp: evento sem mensagem:", JSON.stringify(value));
+      }
       return;
     }
     const from = msg.from;

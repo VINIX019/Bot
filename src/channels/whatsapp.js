@@ -48,9 +48,16 @@ export function mountWhatsApp(app) {
   // Recebimento de mensagens e cliques (POST)
   app.post("/whatsapp/webhook", async (req, res) => {
     res.sendStatus(200);
-    const msg = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!msg) return;
+    const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+    const msg = value?.messages?.[0];
+
+    if (!msg) {
+      if (value?.statuses) console.log("whatsapp: evento de status (entrega/leitura), ignorado");
+      else console.log("whatsapp: evento sem mensagem:", JSON.stringify(value));
+      return;
+    }
     const from = msg.from;
+    console.log("whatsapp: mensagem recebida de", from, "| tipo:", msg.type);
 
     try {
       if (msg.type === "text") {
@@ -63,6 +70,8 @@ export function mountWhatsApp(app) {
           data: msg.interactive.button_reply.id,
         });
         await sendReply(from, reply);
+      } else {
+        console.log("whatsapp: tipo nao tratado:", msg.type);
       }
     } catch (e) {
       console.error("whatsapp error:", e);
